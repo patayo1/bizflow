@@ -39,34 +39,50 @@ Output structure for each item:
 }
 `;
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey
-      },
-      body: JSON.stringify({
-        contents: [
-          { role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Note to parse:\n"${noteText}"` }] }
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: "application/json"
-        }
-      })
-    });
+    // Try multiple model aliases in order of preference
+    const candidateModels = [
+      'gemini-2.0-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash',
+      'gemini-2.5-flash'
+    ];
 
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => null);
-      const detailMsg = errJson?.error?.message || (await response.text());
-      return NextResponse.json({ error: `Google AI Error: ${detailMsg}` }, { status: 500 });
+    let lastError = null;
+
+    for (const model of candidateModels) {
+      try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey
+          },
+          body: JSON.stringify({
+            contents: [
+              { role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Note to parse:\n"${noteText}"` }] }
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: "application/json"
+            }
+          })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const rawOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          const parsedTransactions = JSON.parse(rawOutput || '[]');
+          return NextResponse.json({ success: true, transactions: parsedTransactions });
+        } else {
+          const errJson = await response.json().catch(() => null);
+          lastError = errJson?.error?.message || (await response.text());
+        }
+      } catch (err) {
+        lastError = err.message;
+      }
     }
 
-    const data = await response.json();
-    const rawOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    const parsedTransactions = JSON.parse(rawOutput || '[]');
-
-    return NextResponse.json({ success: true, transactions: parsedTransactions });
+    return NextResponse.json({ error: `Google AI Error: ${lastError}` }, { status: 500 });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
