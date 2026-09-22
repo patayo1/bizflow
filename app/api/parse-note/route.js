@@ -13,6 +13,27 @@ export async function POST(req) {
       return NextResponse.json({ error: 'GEMINI_API_KEY is missing in Vercel settings.' }, { status: 500 });
     }
 
+    // DYNAMIC MODEL DISCOVERY: Ask Google which models are active for this API key
+    let selectedModel = 'models/gemini-1.5-flash';
+    try {
+      const modelsRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+      if (modelsRes.ok) {
+        const modelsData = await modelsRes.json();
+        const available = (modelsData.models || []).filter(m => 
+          m.supportedGenerationMethods?.includes('generateContent')
+        );
+        
+        // Find best flash model, or fall back to any available model
+        const flashModel = available.find(m => m.name.includes('flash'));
+        const chosen = flashModel || available[0];
+        if (chosen?.name) {
+          selectedModel = chosen.name;
+        }
+      }
+    } catch (e) {
+      console.log('Model discovery fallback used');
+    }
+
     const systemPrompt = `
 You are the financial AI parsing engine for "BizFlow", an assistant for small Nigerian businesses and solar contractors.
 Analyze the user's plain-text note and extract all business transactions into clean JSON format.
@@ -39,50 +60,33 @@ Output structure for each item:
 }
 `;
 
-    // Try multiple model aliases in order of preference
-    const candidateModels = [
-      'gemini-2.0-flash',
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-flash',
-      'gemini-2.5-flash'
-    ];
+    const modelPath = selectedModel.startsWith('models/') ? selectedModel : `models/${selectedModel}`;
 
-    let lastError = null;
-
-    for (const model of candidateModels) {
-      try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey
-          },
-          body: JSON.stringify({
-            contents: [
-              { role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Note to parse:\n"${noteText}"` }] }
-            ],
-            generationConfig: {
-              temperature: 0.1,
-              responseMimeType: "application/json"
-            }
-          })
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          const rawOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          const parsedTransactions = JSON.parse(rawOutput || '[]');
-          return NextResponse.json({ success: true, transactions: parsedTransactions });
-        } else {
-          const errJson = await response.json().catch(() => null);
-          lastError = errJson?.error?.message || (await response.text());
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          { role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Note to parse:\n"${noteText}"` }] }
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json"
         }
-      } catch (err) {
-        lastError = err.message;
-      }
+      })
+    });
+
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => null);
+      const detailMsg = errJson?.error?.message || (await response.text());
+      return NextResponse.json({ error: `Google AI Error (${modelPath}): ${detailMsg}` }, { status: 500 });
     }
 
-    return NextResponse.json({ error: `Google AI Error: ${lastError}` }, { status: 500 });
+    const data = await response.json();
+    const rawOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const parsedTransactions = JSON.parse(rawOutput || '[]');
+
+    return NextResponse.json({ success: true, transactions: parsedTransactions });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
