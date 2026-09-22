@@ -9,8 +9,8 @@ export async function POST(req) {
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: 'AI key not configured on server' }, { status: 500 });
+    if (!apiKey || apiKey === 'pending') {
+      return NextResponse.json({ error: 'GEMINI_API_KEY is missing in Vercel settings.' }, { status: 500 });
     }
 
     const systemPrompt = `
@@ -41,7 +41,10 @@ Output structure for each item:
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
       body: JSON.stringify({
         contents: [
           { role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Note to parse:\n"${noteText}"` }] }
@@ -54,8 +57,9 @@ Output structure for each item:
     });
 
     if (!response.ok) {
-      const errData = await response.text();
-      return NextResponse.json({ error: 'Gemini AI parsing failed', details: errData }, { status: 500 });
+      const errJson = await response.json().catch(() => null);
+      const detailMsg = errJson?.error?.message || (await response.text());
+      return NextResponse.json({ error: `Google AI Error: ${detailMsg}` }, { status: 500 });
     }
 
     const data = await response.json();
